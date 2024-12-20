@@ -1,0 +1,41 @@
+FROM postgres:17
+
+# Install required tools
+RUN apt-get update && apt-get install -y openssl sudo curl build-essential pkg-config libssl-dev git libclang-dev postgresql-server-dev-17
+
+# Allow the postgres user to execute certain commands as root without a password
+RUN echo "postgres ALL=(root) NOPASSWD: /usr/bin/mkdir, /bin/chown, /usr/bin/openssl" > /etc/sudoers.d/postgres
+
+# Add init scripts while setting permissions
+COPY --chmod=755 init-ssl.sh /docker-entrypoint-initdb.d/init-ssl.sh
+COPY --chmod=755 wrapper.sh /usr/local/bin/wrapper.sh
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install cargo-pgrx and initialize for PostgreSQL 17
+RUN cargo install cargo-pgrx --version 0.12.6 --locked && \
+    cargo pgrx init --pg17 $(which pg_config)
+
+# Copy the custom PostgreSQL configuration
+COPY postgresql.custom.conf /etc/postgresql/postgresql.custom.conf
+RUN chown postgres:postgres /etc/postgresql/postgresql.custom.conf
+
+   # Include the custom configuration in the main postgresql.conf
+RUN echo "include '/etc/postgresql/postgresql.custom.conf'" >> /usr/share/postgresql/postgresql.conf.sample
+
+# Clone pg_parquet repository (shallow clone for speed)
+RUN git clone --depth 1 https://github.com/CrunchyData/pg_parquet.git /pg_parquet
+
+# Set working directory
+WORKDIR /pg_parquet
+
+# Build the extension
+RUN cargo pgrx install --release
+
+# Reset working directory
+WORKDIR /
+
+ENTRYPOINT ["wrapper.sh"]
+CMD ["postgres", "--port=5432"]
